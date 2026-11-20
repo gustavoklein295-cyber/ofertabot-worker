@@ -340,7 +340,9 @@ def enviar_telegram(item, pct, link):
             if enviado:
                 return True, ""
         except requests.RequestException as erro:
-            falha_foto = str(erro) or "Falha ao enviar a foto"
+            # O Telegram pode ter aceitado a foto antes de a conexão expirar.
+            # Não envie a mesma oferta como texto nem tente novamente no próximo ciclo.
+            return None, str(erro) or "Confirmação do Telegram não recebida"
 
     try:
         enviado, falha_texto = _enviar_telegram_metodo(
@@ -351,7 +353,8 @@ def enviar_telegram(item, pct, link):
         if enviado:
             return True, ""
     except requests.RequestException as erro:
-        falha_texto = str(erro) or "Falha ao enviar a mensagem"
+        # Uma conexão interrompida deixa o resultado do envio indeterminado.
+        return None, str(erro) or "Confirmação do Telegram não recebida"
     detalhe = f"Mensagem: {falha_texto}"
     if falha_foto:
         detalhe = f"Foto: {falha_foto}; {detalhe}"
@@ -482,13 +485,15 @@ def ciclo():
     enviados = 0
     acessorios_enviados = 0
     masculinos_enviados = 0
+    incertos = 0
     ja_enviados = {row[0] for row in con.execute(
         "SELECT fingerprint FROM enviados_fingerprints").fetchall()}
     titulos_conhecidos = titulos_enviados_recentes(con)
     vistos_neste_ciclo = set()
     semelhantes_ignorados = 0
+    processados = 0
     for pct, item in candidatos:
-        if enviados >= MAX_ENVIOS_POR_CICLO:
+        if processados >= MAX_ENVIOS_POR_CICLO:
             break
         if not titulo_relevante(item.get("title")):
             continue
@@ -517,7 +522,7 @@ def ciclo():
         link = f"{BASE_URL}/r/{item['id']}" if BASE_URL else afiliado
         painel.registrar_produto(item["id"], item["title"], item["price"], afiliado)
         sucesso, erro_envio = enviar_telegram(item, pct, link)
-        if sucesso:
+        if sucesso is not False:
             con.execute("INSERT INTO enviados VALUES (?, ?)", (item["id"], time.time()))
             if fingerprint:
                 con.execute("INSERT OR IGNORE INTO enviados_fingerprints VALUES (?, ?, ?)",
@@ -526,12 +531,17 @@ def ciclo():
             if fingerprint:
                 ja_enviados.add(fingerprint)
             titulos_conhecidos.append(item.get("title", ""))
-            enviados += 1
-            if categoria == "acessorios":
-                acessorios_enviados += 1
-            if genero_produto(item.get("title")) == "masculino":
-                masculinos_enviados += 1
-            print(f"[ok] {item['title'][:60]} ({pct}%)")
+            processados += 1
+            if sucesso is True:
+                enviados += 1
+                if categoria == "acessorios":
+                    acessorios_enviados += 1
+                if genero_produto(item.get("title")) == "masculino":
+                    masculinos_enviados += 1
+                print(f"[ok] {item['title'][:60]} ({pct}%)")
+            else:
+                incertos += 1
+                print(f"[envio incerto; marcado para evitar repetição] {item['title'][:60]}: {erro_envio}")
             time.sleep(3)  # evita limite de envio do Telegram
         else:
             print(f"[não enviado ao Telegram] {item['title'][:60]}: {erro_envio}")
@@ -540,6 +550,7 @@ def ciclo():
         f"Ciclo concluído: {enviados} enviados "
         f"({enviados - acessorios_enviados} roupas/calçados, "
         f"{acessorios_enviados} acessórios, {masculinos_enviados} masculinos; "
+        f"{incertos} resultados incertos marcados; "
         f"{semelhantes_ignorados} ofertas parecidas ignoradas)."
     )
 
