@@ -1,6 +1,7 @@
 name: OfertaBot - buscas agendadas
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: "*/10 * * * *"
       timezone: "America/Sao_Paulo"
