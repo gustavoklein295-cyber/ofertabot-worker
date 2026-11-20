@@ -33,7 +33,7 @@ DESCONTO_MINIMO = int(os.environ.get("DESCONTO_MINIMO", "30"))  # em %
 PRODUTOS_POR_TERMO = 30
 MAX_ENVIOS_POR_CICLO = 5
 INTERVALO_MINUTOS = int(os.environ.get("INTERVALO_MINUTOS", "30"))
-DEDUP_JANELA_DIAS = 45
+DEDUP_JANELA_DIAS = 90  # evita que produtos semelhantes voltem logo após algumas semanas
 # Painel (cliques, compras, comissão). BASE_URL = endereço público do seu servidor,
 # ex.: https://meubot.up.railway.app  (sem barra no final). Sem ele, os cliques não são contados.
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
@@ -114,6 +114,10 @@ def categoria_produto(titulo):
     texto = unicodedata.normalize("NFKD", str(titulo or "").casefold())
     texto = "".join(c for c in texto if not unicodedata.combining(c))
     texto = re.sub(r"[^a-z0-9]+", " ", texto).strip()
+    # A palavra "tênis" também aparece em pulseira de tênis; classifique
+    # acessórios de corpo antes de tentar identificar calçados.
+    if re.search(r"\b(pulseira\w*|corrente\w*|colar\w*|anel\w*|brinco\w*|oculos|bone\w*|chapeu\w*|cinto\w*|relogio\w*)\b", texto):
+        return "acessorios"
     if re.search(r"\b(tenis\w*|sneaker\w*)\b", texto):
         return "tenis"
     if re.search(r"\b(calca\w*|jeans|bermuda\w*|shorts?|wide leg)\b", texto):
@@ -389,27 +393,47 @@ def fingerprint_produto(titulo):
 
 
 def tokens_produto(titulo):
+    """Retorna palavras que identificam modelo, marca ou corte do produto."""
     texto = unicodedata.normalize("NFKD", str(titulo or "").casefold())
     texto = "".join(c for c in texto if not unicodedata.combining(c))
-    tokens = set(re.findall(r"[a-z0-9]+", texto))
-    genericos = {
-        "novo", "nova", "original", "promocao", "oferta", "lancamento",
-        "masculino", "masculina", "feminino", "feminina", "unissex",
-        "adulto", "adulta", "moda", "streetwear", "urbano", "urbana",
-        "casual", "premium", "kit", "com", "para", "de", "do", "da",
-        "em", "e", "o", "a", "os", "as", "unidade", "unidades",
-        "preto", "preta", "branco", "branca", "azul", "vermelho", "vermelha",
-        "verde", "rosa", "cinza", "bege", "marrom", "roxo", "amarelo",
-        "p", "m", "g", "gg", "xg", "xl", "xxl",
+    aliases = {
+        "sneaker": "tenis", "sneakers": "tenis", "tshirt": "camiseta",
+        "tshirts": "camiseta", "calcas": "calca", "bermudas": "bermuda",
+        "camisetas": "camiseta", "camisas": "camisa", "jaquetas": "jaqueta",
+        "joggers": "jogger", "pulseiras": "pulseira", "shirt": "camiseta", "shirts": "camiseta",
+        "tee": "camiseta", "hoodie": "moletom", "pants": "calca",
+        "trousers": "calca", "shorts": "bermuda",
     }
-    return {token for token in tokens if len(token) > 1 and token not in genericos}
+    genericos = {
+        "novo", "nova", "novos", "novas", "original", "promocao", "oferta",
+        "lancamento", "frete", "gratis", "desconto", "imperdivel", "masculino",
+        "masculina", "feminino", "feminina", "unissex", "homem", "mulher",
+        "adulto", "adulta", "moda", "fashion", "streetwear", "urbano", "urbana",
+        "casual", "premium", "kit", "com", "para", "de", "do", "da", "em",
+        "e", "o", "a", "os", "as", "unidade", "unidades", "produto", "loja",
+        "y2k", "sport", "sports", "sportswear", "skate", "retro", "vintage",
+        "hiphop", "hip", "hop", "estilo", "tendencia", "novoestilo",
+        "preto", "preta", "pretos", "pretas", "branco", "branca", "brancos",
+        "brancas", "azul", "azuis", "marinho", "marinha", "escuro", "escura", "vermelho", "vermelha", "vermelhos",
+        "vermelhas", "verde", "verdes", "rosa", "rosas", "cinza", "cinzas",
+        "bege", "marrom", "roxo", "roxa", "bolso", "bolsos",
+        "algodao", "sarja", "tactel", "tecido", "manga", "curta", "curto", "longa", "longo", "amarelo", "amarela", "p", "m",
+        "g", "gg", "xg", "xl", "xxl", "tamanho", "cor", "cores",
+    }
+    tokens = {aliases.get(t, t) for t in re.findall(r"[a-z0-9]+", texto)}
+    return {token for token in tokens
+            if len(token) > 1 and token not in genericos and not token.isdigit()}
 
 
 def produtos_parecidos(titulo_a, titulo_b):
-    """Detecta títulos que parecem variantes do mesmo produto/modelo."""
-    tokens_a, tokens_b = tokens_produto(titulo_a), tokens_produto(titulo_b)
-    if min(len(tokens_a), len(tokens_b)) < 3:
+    """Bloqueia o mesmo produto mesmo com variações de título, cor ou tamanho."""
+    if categoria_produto(titulo_a) != categoria_produto(titulo_b):
         return False
+    tokens_a, tokens_b = tokens_produto(titulo_a), tokens_produto(titulo_b)
+    if not tokens_a or not tokens_b:
+        return False
+    if tokens_a == tokens_b:
+        return True
     em_comum = len(tokens_a & tokens_b)
     proporcao_menor = em_comum / min(len(tokens_a), len(tokens_b))
     proporcao_total = em_comum / len(tokens_a | tokens_b)
@@ -417,8 +441,9 @@ def produtos_parecidos(titulo_a, titulo_b):
         None, " ".join(sorted(tokens_a)), " ".join(sorted(tokens_b))
     ).ratio()
     return (
-        (em_comum >= 3 and proporcao_menor >= 0.72 and proporcao_total >= 0.48)
-        or similares_por_nome >= 0.84
+        (em_comum >= 2 and proporcao_menor >= 0.67 and proporcao_total >= 0.40)
+        or (em_comum >= 3 and proporcao_menor >= 0.60 and proporcao_total >= 0.35)
+        or similares_por_nome >= 0.82
     )
 
 
