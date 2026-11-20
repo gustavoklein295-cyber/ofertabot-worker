@@ -519,6 +519,9 @@ def ciclo():
 def main():
     if not SHOPEE_APP_ID or not SHOPEE_SECRET:
         raise RuntimeError("Preencha o App ID e o Secret da Open API de Afiliados Shopee.")
+    if os.environ.get("RUN_ONCE", "").strip() == "1":
+        ciclo()
+        return
     painel.iniciar(DB_FILE, PAINEL_SENHA, TAXA_COMISSAO, PORT, HOST)
     while True:
         try:
