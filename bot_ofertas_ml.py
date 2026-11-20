@@ -357,6 +357,9 @@ def enviar_telegram(item, pct, link):
 def db():
     con = sqlite3.connect(DB_FILE)
     con.execute("CREATE TABLE IF NOT EXISTS enviados (id TEXT PRIMARY KEY, ts REAL)")
+    # A execução agendada não inicia o painel; crie a tabela compartilhada
+    # antes de registrar produtos encontrados no ciclo.
+    con.execute("CREATE TABLE IF NOT EXISTS produtos (id TEXT PRIMARY KEY, titulo TEXT, preco REAL, link TEXT, enviado_em REAL)")
     con.execute("CREATE TABLE IF NOT EXISTS enviados_fingerprints (fingerprint TEXT PRIMARY KEY, id TEXT, ts REAL)")
     # Aprende os títulos de ofertas que já foram confirmadas no Telegram antes
     # desta versão, para evitar repeti-las após a atualização.
