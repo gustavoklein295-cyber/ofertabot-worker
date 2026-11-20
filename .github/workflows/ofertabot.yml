@@ -2,7 +2,7 @@ name: OfertaBot - buscas agendadas
 
 on:
   schedule:
-    - cron: "17 */2 * * *"
+    - cron: "*/10 * * * *"
       timezone: "America/Sao_Paulo"
 
 permissions:
