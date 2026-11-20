@@ -21,9 +21,9 @@ CHAT_ID_MIGRADO_CALLBACK = None
 
 # Termos de busca na Shopee
 TERMOS_PADRAO = (
-    "tênis masculino skate y2k, tênis esportivo retrô masculino, camiseta oversized streetwear, "
+    "tênis street masculino colorido mesh refletivo solado robusto, tênis streetwear masculino chunky skate retrô, camiseta oversized streetwear, "
     "camiseta masculina y2k sport, camisa de futebol streetwear, jersey futebol y2k, "
-    "moletom esportivo masculino streetwear, jaqueta track masculina y2k, "
+    "conjunto moletom algodão capuz calça lettering hip hop masculino, jaqueta track masculina y2k, "
     "corta vento esportivo streetwear, calça track pants masculina, calça cargo streetwear, "
     "calça baggy y2k, bermuda cargo masculina streetwear, boné hip hop y2k, "
     "óculos esportivo y2k, corrente masculina hip hop, pulseira streetwear"
