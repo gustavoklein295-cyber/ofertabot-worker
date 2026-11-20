@@ -33,7 +33,7 @@ DESCONTO_MINIMO = int(os.environ.get("DESCONTO_MINIMO", "30"))  # em %
 PRODUTOS_POR_TERMO = 30
 MAX_ENVIOS_POR_CICLO = 5
 INTERVALO_MINUTOS = int(os.environ.get("INTERVALO_MINUTOS", "30"))
-DEDUP_JANELA_DIAS = 180  # evita que produtos iguais ou muito parecidos voltem por seis meses
+BASELINE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dedupe_baseline.json")
 # Painel (cliques, compras, comissão). BASE_URL = endereço público do seu servidor,
 # ex.: https://meubot.up.railway.app  (sem barra no final). Sem ele, os cliques não são contados.
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
@@ -368,6 +368,8 @@ def db():
     # antes de registrar produtos encontrados no ciclo.
     con.execute("CREATE TABLE IF NOT EXISTS produtos (id TEXT PRIMARY KEY, titulo TEXT, preco REAL, link TEXT, enviado_em REAL)")
     con.execute("CREATE TABLE IF NOT EXISTS enviados_fingerprints (fingerprint TEXT PRIMARY KEY, id TEXT, ts REAL)")
+    con.execute("CREATE TABLE IF NOT EXISTS enviados_ids_hash (id_hash TEXT PRIMARY KEY)")
+    con.execute("CREATE TABLE IF NOT EXISTS enviados_token_signatures (id_hash TEXT PRIMARY KEY, categoria TEXT, tokens TEXT)")
     # Aprende os títulos de ofertas que já foram confirmadas no Telegram antes
     # desta versão, para evitar repeti-las após a atualização.
     try:
@@ -382,6 +384,27 @@ def db():
         if chave:
             con.execute("INSERT OR IGNORE INTO enviados_fingerprints VALUES (?, ?, ?)",
                         (chave, pid, ts))
+        id_hash = hashlib.sha256(str(pid).encode("utf-8")).hexdigest()
+        con.execute("INSERT OR IGNORE INTO enviados_ids_hash VALUES (?)", (id_hash,))
+
+    try:
+        with open(BASELINE_FILE, encoding="utf-8") as arquivo:
+            baseline = json.load(arquivo)
+    except (OSError, ValueError):
+        baseline = {"products": []}
+    for produto in baseline.get("products", []):
+        id_hash = produto.get("id_sha256")
+        fingerprint = produto.get("title_sha256")
+        categoria = produto.get("category")
+        tokens = sorted(set(produto.get("token_sha256", [])))
+        if id_hash:
+            con.execute("INSERT OR IGNORE INTO enviados_ids_hash VALUES (?)", (id_hash,))
+        if fingerprint:
+            con.execute("INSERT OR IGNORE INTO enviados_fingerprints VALUES (?, ?, ?)",
+                        (fingerprint, id_hash or "historico", 0))
+        if id_hash and categoria and tokens:
+            con.execute("INSERT OR IGNORE INTO enviados_token_signatures VALUES (?, ?, ?)",
+                        (id_hash, categoria, json.dumps(tokens)))
     con.commit()
     return con
 
@@ -428,36 +451,47 @@ def tokens_produto(titulo):
             if len(token) > 1 and token not in genericos and not token.isdigit()}
 
 
-def produtos_parecidos(titulo_a, titulo_b):
-    """Bloqueia o mesmo produto mesmo com variações de título, cor ou tamanho."""
-    if categoria_produto(titulo_a) != categoria_produto(titulo_b):
-        return False
-    tokens_a, tokens_b = tokens_produto(titulo_a), tokens_produto(titulo_b)
-    if not tokens_a or not tokens_b:
+def hash_tokens_produto(titulo):
+    return {hashlib.sha256(token.encode("utf-8")).hexdigest()
+            for token in tokens_produto(titulo)}
+
+
+def produtos_parecidos_por_tokens(categoria_a, tokens_a, categoria_b, tokens_b,
+                                  comparar_nome=True):
+    if categoria_a != categoria_b or not tokens_a or not tokens_b:
         return False
     if tokens_a == tokens_b:
         return True
     em_comum = len(tokens_a & tokens_b)
     proporcao_menor = em_comum / min(len(tokens_a), len(tokens_b))
     proporcao_total = em_comum / len(tokens_a | tokens_b)
-    similares_por_nome = SequenceMatcher(
-        None, " ".join(sorted(tokens_a)), " ".join(sorted(tokens_b))
-    ).ratio()
+    similares_por_nome = False
+    if comparar_nome:
+        similares_por_nome = SequenceMatcher(
+            None, " ".join(sorted(tokens_a)), " ".join(sorted(tokens_b))
+        ).ratio() >= 0.82
     return (
         (em_comum >= 2 and proporcao_menor >= 0.67 and proporcao_total >= 0.40)
         or (em_comum >= 3 and proporcao_menor >= 0.60 and proporcao_total >= 0.35)
-        or similares_por_nome >= 0.82
+        or similares_por_nome
     )
 
 
-def titulos_enviados_recentes(con):
-    desde = time.time() - DEDUP_JANELA_DIAS * 24 * 60 * 60
+def produtos_parecidos(titulo_a, titulo_b):
+    """Bloqueia o mesmo produto mesmo com variações de título, cor ou tamanho."""
+    return produtos_parecidos_por_tokens(
+        categoria_produto(titulo_a), tokens_produto(titulo_a),
+        categoria_produto(titulo_b), tokens_produto(titulo_b),
+    )
+
+
+def titulos_enviados(con):
     try:
         return [row[0] for row in con.execute("""
             SELECT DISTINCT p.titulo
             FROM produtos p INNER JOIN enviados e ON e.id = p.id
-            WHERE e.ts >= ? AND p.titulo IS NOT NULL
-        """, (desde,)).fetchall()]
+            WHERE p.titulo IS NOT NULL
+        """).fetchall()]
     except sqlite3.OperationalError:
         return []
 
@@ -488,7 +522,15 @@ def ciclo():
     incertos = 0
     ja_enviados = {row[0] for row in con.execute(
         "SELECT fingerprint FROM enviados_fingerprints").fetchall()}
-    titulos_conhecidos = titulos_enviados_recentes(con)
+    ids_hash_enviados = {row[0] for row in con.execute(
+        "SELECT id_hash FROM enviados_ids_hash").fetchall()}
+    assinaturas_historicas = [
+        (categoria, set(json.loads(tokens)))
+        for categoria, tokens in con.execute(
+            "SELECT categoria, tokens FROM enviados_token_signatures"
+        ).fetchall()
+    ]
+    titulos_conhecidos = titulos_enviados(con)
     vistos_neste_ciclo = set()
     semelhantes_ignorados = 0
     processados = 0
@@ -502,10 +544,23 @@ def ciclo():
             continue
         if con.execute("SELECT 1 FROM enviados WHERE id=?", (item["id"],)).fetchone():
             continue
+        id_hash = hashlib.sha256(str(item["id"]).encode("utf-8")).hexdigest()
+        if id_hash in ids_hash_enviados:
+            continue
         fingerprint = fingerprint_produto(item.get("title"))
         if fingerprint and (fingerprint in ja_enviados or fingerprint in vistos_neste_ciclo):
             continue
-        if any(produtos_parecidos(item.get("title"), titulo) for titulo in titulos_conhecidos):
+        categoria_tokens = tokens_produto(item.get("title"))
+        tokens_hash = {hashlib.sha256(token.encode("utf-8")).hexdigest()
+                       for token in categoria_tokens}
+        if (
+            any(produtos_parecidos(item.get("title"), titulo)
+                for titulo in titulos_conhecidos)
+            or any(produtos_parecidos_por_tokens(
+                categoria, tokens_hash, categoria_historica, tokens_historicos,
+                comparar_nome=False,
+            ) for categoria_historica, tokens_historicos in assinaturas_historicas)
+        ):
             semelhantes_ignorados += 1
             continue
         if fingerprint:
@@ -524,10 +579,12 @@ def ciclo():
         sucesso, erro_envio = enviar_telegram(item, pct, link)
         if sucesso is not False:
             con.execute("INSERT INTO enviados VALUES (?, ?)", (item["id"], time.time()))
+            con.execute("INSERT OR IGNORE INTO enviados_ids_hash VALUES (?)", (id_hash,))
             if fingerprint:
                 con.execute("INSERT OR IGNORE INTO enviados_fingerprints VALUES (?, ?, ?)",
                             (fingerprint, item["id"], time.time()))
             con.commit()
+            ids_hash_enviados.add(id_hash)
             if fingerprint:
                 ja_enviados.add(fingerprint)
             titulos_conhecidos.append(item.get("title", ""))
