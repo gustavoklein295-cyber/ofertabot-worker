@@ -1,0 +1,32 @@
+services:
+  - type: worker
+    name: ofertabot
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    disk:
+      name: ofertabot-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: HOST
+        value: 127.0.0.1
+      - key: PORT
+        value: "8080"
+      - key: DB_FILE
+        value: /data/enviados.db
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SHOPEE_APP_ID
+        sync: false
+      - key: SHOPEE_SECRET
+        sync: false
+      - key: DESCONTO_MINIMO
+        value: "30"
+      - key: INTERVALO_MINUTOS
+        value: "30"
