@@ -30,7 +30,8 @@ TERMOS_PADRAO = (
 )
 TERMOS = [t.strip() for t in os.environ.get("TERMOS", TERMOS_PADRAO).split(",") if t.strip()]
 DESCONTO_MINIMO = int(os.environ.get("DESCONTO_MINIMO", "30"))  # em %
-PRODUTOS_POR_TERMO = 30MAX_ENVIOS_POR_CICLO = 5
+PRODUTOS_POR_TERMO = 30
+MAX_ENVIOS_POR_CICLO = 5
 INTERVALO_MINUTOS = int(os.environ.get("INTERVALO_MINUTOS", "30"))
 DEDUP_JANELA_DIAS = 180  # evita que produtos iguais ou muito parecidos voltem por seis meses
 # Painel (cliques, compras, comissão). BASE_URL = endereço público do seu servidor,
